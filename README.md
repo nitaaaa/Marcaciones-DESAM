@@ -20,7 +20,6 @@ El sistema procesa las notificaciones en lotes para optimizar el rendimiento y m
 - ✅ Procesamiento en lotes para optimizar rendimiento
 - ✅ Manejo robusto de errores y timeouts
 - ✅ Sistema de reintentos automáticos
-- ✅ Configuración mediante variables de entorno
 - ✅ Soporte para marcaciones desde App móvil y terminales físicos
 
 ## 🛠️ Tecnologías Utilizadas
@@ -66,7 +65,7 @@ El sistema procesa las notificaciones en lotes para optimizar el rendimiento y m
    DB_ICLOCK_DATABASE=biotime
    DB_ICLOCK_PORT=7496
 
-   # API Principal (opcional)
+   # API ZKTeco (opcional)
    API_URL=https://tu-api-url.com
    API_USERNAME=tu_usuario
    API_PASSWORD=tu_password
@@ -153,11 +152,6 @@ Las notificaciones se configuran por área mediante la tabla `notification_setti
 - Solo procesa marcaciones con `punch_state` "0" (entrada) o "1" (salida) para Proexsi
 - Las marcaciones desde App móvil (`terminal_sn = 'App'`) siempre generan notificaciones por correo
 
-## 🔒 Seguridad
-
-- ⚠️ **Nunca subas el archivo `.env` al repositorio**
-- ⚠️ **Cambia todas las credenciales por defecto**
-- ⚠️ **Mantén el archivo `.env` fuera del control de versiones**
 
 El archivo `.gitignore` ya está configurado para ignorar archivos sensibles.
 
@@ -192,8 +186,8 @@ ISC
 
 ## 👥 Autor
 
-Municipalidad Puerto Montt - DESAM
+Jorge Grez González
 
 ## 📞 Soporte
 
-Para problemas o consultas, contacta al equipo de desarrollo.
+Para problemas o consultas, contacta a oficina de informatica DESAM Puerto Montt informatica@saludpm.cl
