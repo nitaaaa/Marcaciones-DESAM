@@ -1,0 +1,27 @@
+# Variables de entorno
+.env
+.env.*.local
+.env.local
+
+# Dependencias
+node_modules/
+
+# Logs
+*.log
+logs/
+marcaciones.log
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Archivos temporales
+*.tmp
+*.temp
