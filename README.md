@@ -130,21 +130,91 @@ Marcaciones-DESAM/
 
 ### Base de Datos
 
-El sistema requiere acceso a una base de datos PostgreSQL con las siguientes tablas:
-- `iclock_transaction`: Transacciones de marcaciones
-- `notificaciones_pendientes`: Notificaciones pendientes de procesar
-- `notificacion_operaciones`: Registro de operaciones completadas
-- `personnel_employee`: Información de empleados
-- `personnel_area`: Áreas/establecimientos
-- `notification_settings`: Configuración de notificaciones por área
-- `iclock_terminal`: Terminales de marcación
+El programa se conecta a la base de datos PostgreSQL del sistema de asistencia ZKTeco (Biotime).  
+Sobre esa base de datos ya existente se realizan las siguientes **modificaciones** para que la aplicación funcione:
+
+- `notificaciones_pendientes`: Tabla nueva donde se registran las marcaciones pendientes de procesar
+- `notificacion_operaciones`: Tabla nueva donde se registra el estado de cada operación realizada sobre una marcación (email, APIs, etc.)
+- `notification_settings`: Tabla nueva donde se configura, por área (`personnel_area`), qué tipos de notificación se deben ejecutar
+
+#### SQL para crear tablas, función y trigger
+
+Ejecutar el siguiente SQL sobre la base de datos de ZKTeco para preparar el entorno:
+
+```sql
+-- 1) Tabla notificaciones_pendientes
+CREATE TABLE public.notificaciones_pendientes (
+    iclock_transaction_id integer NOT NULL,
+    procesado boolean NOT NULL DEFAULT false,
+    CONSTRAINT notificaciones_pendientes_pkey PRIMARY KEY (iclock_transaction_id),
+    CONSTRAINT notificaciones_pendientes_iclock_transaction_fk
+        FOREIGN KEY (iclock_transaction_id)
+        REFERENCES public.iclock_transaction (id)
+        ON UPDATE CASCADE
+        ON DELETE CASCADE
+);
+
+-- 2) Tabla notificacion_operaciones
+CREATE TABLE public.notificacion_operaciones (
+    id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    iclock_transaction_id integer NOT NULL,
+    operacion character varying(50) NOT NULL,
+    completada boolean NOT NULL DEFAULT false,
+    error_mensaje text,
+    intentos integer NOT NULL DEFAULT 0,
+    CONSTRAINT notificacion_operaciones_iclock_transaction_fk
+        FOREIGN KEY (iclock_transaction_id)
+        REFERENCES public.iclock_transaction (id)
+        ON UPDATE CASCADE
+        ON DELETE CASCADE,
+    CONSTRAINT notificacion_operaciones_unique_tx_operacion
+        UNIQUE (iclock_transaction_id, operacion)
+);
+
+-- 3) Tabla notification_settings
+CREATE TABLE public.notification_settings (
+    personnel_area_id integer NOT NULL,
+    email boolean NOT NULL DEFAULT false,
+    api boolean NOT NULL DEFAULT false,
+    api_proexsi boolean NOT NULL DEFAULT false,
+    CONSTRAINT notification_settings_pkey PRIMARY KEY (personnel_area_id),
+    CONSTRAINT notification_settings_personnel_area_fk
+        FOREIGN KEY (personnel_area_id)
+        REFERENCES public.personnel_area (id)
+        ON UPDATE CASCADE
+        ON DELETE CASCADE
+);
+
+-- 4) Función registrar_notificacion()
+CREATE OR REPLACE FUNCTION public.registrar_notificacion()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $function$
+BEGIN
+    INSERT INTO public.notificaciones_pendientes (iclock_transaction_id, procesado)
+    VALUES (NEW.id, FALSE);
+
+    RETURN NEW;
+END;
+$function$;
+
+-- 5) Trigger en iclock_transaction
+CREATE TRIGGER trg_registrar_notificacion_iclock
+AFTER INSERT ON public.iclock_transaction
+FOR EACH ROW
+EXECUTE FUNCTION public.registrar_notificacion();
+```
 
 ### Configuración de Notificaciones
 
-Las notificaciones se configuran por área mediante la tabla `notification_settings`:
-- `email`: Habilitar/deshabilitar envío de correos
-- `api`: Habilitar/deshabilitar envío a API Saturno
-- `api_proexsi`: Habilitar/deshabilitar envío a API Proexsi
+Las notificaciones se configuran **por área** (`personnel_area`) mediante la tabla `notification_settings`.  
+Cada fila de esta tabla le indica al programa qué acciones debe ejecutar para las marcaciones de esa área específica:
+- `email`: Habilitar/deshabilitar envío de correos para esa área
+- `api`: Habilitar/deshabilitar envío de marcaciones a la API Saturno
+- `api_proexsi`: Habilitar/deshabilitar envío de marcaciones a la API Proexsi
+
+Si para un área **todos estos campos están en `false`**, las marcaciones asociadas a esa área **no generarán ningún envío**, es decir:  
+no se enviarán correos ni se enviará información a ninguna API externa.
 
 ### Procesamiento de Marcaciones
 
