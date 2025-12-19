@@ -91,6 +91,9 @@ El sistema procesa las notificaciones en lotes para optimizar el rendimiento y m
    EMAIL_TIMEOUT_GREETING=30000
    EMAIL_TIMEOUT_SOCKET=60000
    EMAIL_TIMEOUT_COMMAND=30000
+   
+   # Correo para alertas de bloqueo
+   EMAIL_ALERTA=informatica@saludpm.cl
    ```
 
 ## ▶️ Uso
@@ -107,12 +110,29 @@ La aplicación se ejecutará en un bucle infinito, consultando notificaciones pe
 
 Presiona `Ctrl + C` para detener la aplicación de forma segura. El sistema cerrará las conexiones a la base de datos antes de finalizar.
 
+### Desbloquear operaciones bloqueadas de Proexsi
+
+Si una operación de Proexsi se bloquea después de 3 fallos consecutivos, puedes desbloquearla manualmente usando el script `desbloquear-proexsi.js`:
+
+**Desbloquear una transacción específica:**
+```bash
+node desbloquear-proexsi.js --transaccion 12345
+```
+
+**Desbloquear todas las operaciones bloqueadas:**
+```bash
+node desbloquear-proexsi.js --todas
+```
+
+El script resetea el contador de intentos y limpia el flag de bloqueo, permitiendo que el sistema reintente los envíos. El historial completo de errores se conserva en la tabla `notificacion_errores`.
+
 ## 📁 Estructura del Proyecto
 
 ```
 Marcaciones-DESAM/
 ├── app.js                      # Archivo principal de la aplicación
 ├── emailMessageBuilder.js      # Constructor de mensajes de correo
+├── desbloquear-proexsi.js     # Script para desbloquear operaciones bloqueadas
 ├── package.json                # Dependencias del proyecto
 ├── .env                        # Variables de entorno (no se sube al repositorio)
 ├── .gitignore                  # Archivos ignorados por Git
@@ -121,6 +141,8 @@ Marcaciones-DESAM/
 ├── services/
 │   ├── apiService.js          # Servicios para APIs externas
 │   └── emailService.js        # Servicio de envío de correos
+├── sql/
+│   └── crear_tabla_notificacion_errores.sql  # SQL para crear tabla de historial de errores
 └── utils/
     ├── dateUtils.js           # Utilidades para formateo de fechas
     └── rutUtils.js            # Utilidades para validación de RUT
@@ -135,6 +157,7 @@ Sobre esa base de datos ya existente se realizan las siguientes **modificaciones
 
 - `notificaciones_pendientes`: Tabla nueva donde se registran las marcaciones pendientes de procesar
 - `notificacion_operaciones`: Tabla nueva donde se registra el estado de cada operación realizada sobre una marcación (email, APIs, etc.)
+- `notificacion_errores`: Tabla nueva donde se conserva el historial completo de errores (nunca se elimina)
 - `notification_settings`: Tabla nueva donde se configura, por área (`personnel_area`), qué tipos de notificación se deben ejecutar
 
 #### SQL para crear tablas, función y trigger
@@ -171,7 +194,24 @@ CREATE TABLE public.notificacion_operaciones (
         UNIQUE (iclock_transaction_id, operacion)
 );
 
--- 3) Tabla notification_settings
+-- 3) Tabla notificacion_errores (historial completo de errores)
+CREATE TABLE IF NOT EXISTS public.notificacion_errores (
+    id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    iclock_transaction_id integer NOT NULL,
+    operacion character varying(50) NOT NULL,
+    error_mensaje text NOT NULL,
+    fecha_error timestamp NOT NULL DEFAULT NOW(),
+    CONSTRAINT notificacion_errores_iclock_transaction_fk
+        FOREIGN KEY (iclock_transaction_id)
+        REFERENCES public.iclock_transaction (id)
+        ON UPDATE CASCADE
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_notificacion_errores_transaccion_operacion 
+ON public.notificacion_errores(iclock_transaction_id, operacion);
+
+-- 4) Tabla notification_settings
 CREATE TABLE public.notification_settings (
     personnel_area_id integer NOT NULL,
     email boolean NOT NULL DEFAULT false,
@@ -185,7 +225,7 @@ CREATE TABLE public.notification_settings (
         ON DELETE CASCADE
 );
 
--- 4) Función registrar_notificacion()
+-- 5) Función registrar_notificacion()
 CREATE OR REPLACE FUNCTION public.registrar_notificacion()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -198,7 +238,7 @@ BEGIN
 END;
 $function$;
 
--- 5) Trigger en iclock_transaction
+-- 6) Trigger en iclock_transaction
 CREATE TRIGGER trg_registrar_notificacion_iclock
 AFTER INSERT ON public.iclock_transaction
 FOR EACH ROW
@@ -221,6 +261,17 @@ no se enviarán correos ni se enviará información a ninguna API externa.
 - El sistema procesa marcaciones en lotes de 40 para optimizar el rendimiento
 - Solo procesa marcaciones con `punch_state` "0" (entrada) o "1" (salida) para Proexsi
 - Las marcaciones desde App móvil (`terminal_sn = 'App'`) siempre generan notificaciones por correo
+
+### Sistema de Bloqueo Automático para Proexsi
+
+El sistema incluye protección contra acumulación de errores en Proexsi:
+
+- **Bloqueo automático**: Si una operación falla 3 veces consecutivas, se bloquea automáticamente
+- **Alerta por correo**: Cuando se bloquea una operación, se envía un correo de alerta al correo configurado en `EMAIL_ALERTA`
+- **Historial de errores**: Todos los errores se guardan en la tabla `notificacion_errores` para análisis posterior
+- **Desbloqueo manual**: Puedes desbloquear operaciones usando el script `desbloquear-proexsi.js`
+
+**Importante**: Una vez bloqueada, la operación no se reintentará automáticamente hasta que se desbloquee manualmente. Esto previene que el servidor de Proexsi detecte múltiples intentos fallidos como un ataque DDoS.
 
 
 El archivo `.gitignore` ya está configurado para ignorar archivos sensibles.

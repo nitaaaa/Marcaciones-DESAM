@@ -48,6 +48,160 @@ async function marcarOperacionCompletada(transactionId, operacion) {
   }
 }
 
+// Funcion para guardar error en el historial (tabla notificacion_errores)
+async function guardarErrorEnHistorial(transactionId, operacion, mensajeError) {
+  try {
+    await poolIclock.query(
+      `INSERT INTO notificacion_errores (iclock_transaction_id, operacion, error_mensaje)
+       VALUES ($1, $2, $3)`,
+      [transactionId, operacion, mensajeError]
+    );
+  } catch (error) {
+    console.error(`Error al guardar error en historial:`, error);
+  }
+}
+
+// Funcion para verificar si una operacion esta bloqueada por fallos consecutivos
+async function verificarOperacionBloqueada(transactionId, operacion, maxFallos = 3) {
+  try {
+    const result = await poolIclock.query(
+      `SELECT intentos, error_mensaje 
+       FROM notificacion_operaciones 
+       WHERE iclock_transaction_id = $1 AND operacion = $2 AND completada = false`,
+      [transactionId, operacion]
+    );
+    
+    if (result.rows.length > 0) {
+      const intentos = result.rows[0].intentos || 0;
+      const errorMensaje = result.rows[0].error_mensaje || '';
+      
+      // Verificar si esta bloqueado: intentos >= maxFallos O mensaje contiene BLOQUEADO
+      if (intentos >= maxFallos || errorMensaje.includes('BLOQUEADO')) {
+        return true;
+      }
+    }
+    
+    return false;
+  } catch (error) {
+    console.error('Error al verificar operacion bloqueada:', error);
+    return false;
+  }
+}
+
+// Funcion para registrar un fallo en una operacion
+async function registrarFalloOperacion(transactionId, operacion, mensajeError, transaccion = null) {
+  try {
+    // Primero: guardar el error en el historial
+    await guardarErrorEnHistorial(transactionId, operacion, mensajeError);
+    
+    // Consultar intentos actuales
+    const result = await poolIclock.query(
+      `SELECT intentos FROM notificacion_operaciones 
+       WHERE iclock_transaction_id = $1 AND operacion = $2 AND completada = false`,
+      [transactionId, operacion]
+    );
+    
+    const intentosActuales = result.rows.length > 0 ? (result.rows[0].intentos || 0) : 0;
+    const nuevosIntentos = intentosActuales + 1;
+    
+    // Si llega a 3 fallos, bloquear la operacion y enviar alerta
+    if (nuevosIntentos >= 3) {
+      const errorFinal = `BLOQUEADO: 3 fallos consecutivos. Último error: ${mensajeError}`;
+      
+      await poolIclock.query(`
+        INSERT INTO notificacion_operaciones (iclock_transaction_id, operacion, completada, intentos, error_mensaje)
+        VALUES ($1, $2, false, $3, $4)
+        ON CONFLICT (iclock_transaction_id, operacion) 
+        DO UPDATE SET intentos = $3, error_mensaje = $4
+      `, [transactionId, operacion, nuevosIntentos, errorFinal]);
+      
+      //console.warn(`Operación ${operacion} bloqueada para transacción ${transactionId} después de ${nuevosIntentos} fallos consecutivos`);
+      
+      // Enviar correo de alerta cuando se bloquea
+      await enviarAlertaBloqueo(transactionId, operacion, mensajeError, transaccion);
+      
+      return nuevosIntentos;
+    } else {
+      // Si aún no llega a 3, solo registrar el fallo
+      await poolIclock.query(`
+        INSERT INTO notificacion_operaciones (iclock_transaction_id, operacion, completada, intentos, error_mensaje)
+        VALUES ($1, $2, false, $3, $4)
+        ON CONFLICT (iclock_transaction_id, operacion) 
+        DO UPDATE SET intentos = $3, error_mensaje = $4
+      `, [transactionId, operacion, nuevosIntentos, mensajeError]);
+      
+      return nuevosIntentos;
+    }
+  } catch (error) {
+    console.error(`Error al registrar fallo de operación:`, error);
+  }
+}
+
+// Funcion para enviar alerta de bloqueo por correo
+async function enviarAlertaBloqueo(transactionId, operacion, mensajeError, transaccion) {
+  try {
+    const rutCompleto = transaccion ? 
+      transaccion.emp_code + '-' + calcularDigitoVerificador(transaccion.emp_code) : 
+      'N/A';
+    
+    const nombreEmpleado = transaccion ? 
+      `${transaccion.first_name || ''} ${transaccion.last_name || ''}`.trim() : 
+      'N/A';
+    
+    const fechaHora = transaccion && transaccion.punch_time ? 
+      new Date(transaccion.punch_time).toLocaleString('es-ES') : 
+      new Date().toLocaleString('es-ES');
+    
+    const mensajeAlerta = {
+      text: `ALERTA: Bloqueo de operación en sistema de marcaciones\n\n` +
+            `Se ha bloqueado la operación "${operacion}" después de 3 fallos consecutivos.\n\n` +
+            `Detalles:\n` +
+            `- ID Transacción: ${transactionId}\n` +
+            `- Operación: ${operacion}\n` +
+            `- RUT Empleado: ${rutCompleto}\n` +
+            `- Nombre: ${nombreEmpleado}\n` +
+            `- Fecha/Hora Marcación: ${fechaHora}\n` +
+            `- Último Error: ${mensajeError}\n\n` +
+            `La operación no se volverá a intentar automáticamente.\n` +
+            `Por favor, revisar la configuración y el estado del servicio.`,
+      html: `
+        <div style="font-family: Arial, sans-serif;">
+          <h2 style="color: #d32f2f;">⚠️ ALERTA: Bloqueo de operación en sistema de marcaciones</h2>
+          <p>Se ha bloqueado la operación <strong>"${operacion}"</strong> después de <strong>3 fallos consecutivos</strong>.</p>
+          
+          <h3>Detalles del bloqueo:</h3>
+          <ul>
+            <li><strong>ID Transacción:</strong> ${transactionId}</li>
+            <li><strong>Operación:</strong> ${operacion}</li>
+            <li><strong>RUT Empleado:</strong> ${rutCompleto}</li>
+            <li><strong>Nombre:</strong> ${nombreEmpleado}</li>
+            <li><strong>Fecha/Hora Marcación:</strong> ${fechaHora}</li>
+            <li><strong>Último Error:</strong> ${mensajeError}</li>
+          </ul>
+          
+          <p style="color: #d32f2f; font-weight: bold;">
+            ⚠️ La operación no se volverá a intentar automáticamente.<br>
+            Por favor, revisar la configuración y el estado del servicio.
+          </p>
+        </div>
+      `
+    };
+    
+    const emailAlerta = process.env.EMAIL_ALERTA;
+    const emailEnviado = await sendEmail(
+      emailAlerta,
+      `[ALERTA] Bloqueo de operación ${operacion} - Transacción ${transactionId}`,
+      mensajeAlerta
+    );
+    
+    if (!emailEnviado) {
+      console.error(`Error al enviar alerta de bloqueo por correo para transacción ${transactionId}`);
+    }
+  } catch (error) {
+    console.error(`Error al enviar alerta de bloqueo:`, error);
+  }
+}
+
 // Funcion separada para procesar envío de email
 async function procesarEnvioEmail(transaccion, rutCompleto) {
   try {
@@ -72,7 +226,6 @@ async function procesarEnvioEmail(transaccion, rutCompleto) {
       return false;
     }
     
-    //console.log(`Email enviado exitosamente para RUT ${rutCompleto}`);
     return true;
     
   } catch (error) {
@@ -97,20 +250,29 @@ async function procesarEnvioAPISaturno(transaccion) {
 }
 
 // Funcion separada para procesar envío a API Proexsi
+// Retorna objeto con { success, error?, resultado? }
 async function procesarEnvioAPIProexsi(transaccion) {
   try {
     const resultado = await enviarMarcacionAPIProexsi(transaccion);
     if (resultado.success) {
       const horaEnvioProexsi = new Date().toLocaleString('es-ES');
-      //console.log(`[${horaEnvioProexsi}] Marcacion enviada exitosamente a Proexsi para empleado ${transaccion.emp_code}`);
-      return true;
+      return { success: true, resultado: resultado };
     } else {
-      console.error(`Error en Proexsi - Estado: ${resultado.estadoMarcacion}, Mensaje: ${resultado.mensaje}`);
-      return false;
+      const mensajeError = resultado.error || resultado.mensaje || `Estado: ${resultado.estadoMarcacion}, Mensaje: ${resultado.mensaje}`;
+      console.error(`Error en Proexsi - ${mensajeError}`);
+      return { 
+        success: false, 
+        error: mensajeError,
+        resultado: resultado
+      };
     }
   } catch (error) {
     console.error(`Error en envío a Proexsi:`, error);
-    return false;
+    return { 
+      success: false, 
+      error: error.message || 'Error desconocido en Proexsi',
+      resultado: null
+    };
   }
 }
 
@@ -151,6 +313,8 @@ async function consultarNotificacionesPendientes() {
         const promesasProcesamiento = lote.map(async (notificacion) => {
           const transaccion = await obtenerTransaccion(notificacion.iclock_transaction_id);
           const rutCompleto = transaccion.emp_code + '-' + calcularDigitoVerificador(transaccion.emp_code);
+          
+          let operacionesBloqueadas = 0;
 
           try {
             const operacionesCompletadas = await verificarOperacionesCompletadas(notificacion.iclock_transaction_id);
@@ -194,13 +358,28 @@ async function consultarNotificacionesPendientes() {
             if (notificacion.api_proexsi && (notificacion.punch_state == "0" || notificacion.punch_state == "1")) {
               operacionesRequeridas.push('api_proexsi');
               if (!operacionesCompletadas.api_proexsi) {
-                operacionesPendientes.push('api_proexsi');
-                const apiProexsiExitosa = await procesarEnvioAPIProexsi(transaccion);
-                if (apiProexsiExitosa) {
-                  await marcarOperacionCompletada(notificacion.iclock_transaction_id, 'api_proexsi');
-                  operacionesCompletadas.api_proexsi = true;
+                // Verificar si la operación está bloqueada por fallos consecutivos
+                const estaBloqueada = await verificarOperacionBloqueada(notificacion.iclock_transaction_id, 'api_proexsi', 3);
+                
+                if (estaBloqueada) {
+                  operacionesBloqueadas++;
+                  // No intentar más, pero no marcar como completada para que se sepa que falló
                 } else {
-                  todasLasOperacionesCompletadas = false;
+                  operacionesPendientes.push('api_proexsi');
+                  const resultado = await procesarEnvioAPIProexsi(transaccion);
+                  if (resultado.success) {
+                    await marcarOperacionCompletada(notificacion.iclock_transaction_id, 'api_proexsi');
+                    operacionesCompletadas.api_proexsi = true;
+                  } else {
+                    // Registrar el fallo (esto enviará el correo si llega a 3 fallos)
+                    await registrarFalloOperacion(
+                      notificacion.iclock_transaction_id, 
+                      'api_proexsi', 
+                      resultado.error,
+                      transaccion
+                    );
+                    todasLasOperacionesCompletadas = false;
+                  }
                 }
               }
             }
@@ -218,7 +397,9 @@ async function consultarNotificacionesPendientes() {
               );
             } else {
               const pendientesTexto = operacionesPendientes.length > 0 ? operacionesPendientes.join(', ') : 'ninguna nueva';
-              console.log(`Notificacion ${notificacion.iclock_transaction_id} parcialmente procesada - Operaciones pendientes: ${pendientesTexto}`);
+              if (pendientesTexto != 'ninguna nueva') {
+                console.log(`Notificacion ${notificacion.iclock_transaction_id} parcialmente procesada - Operaciones pendientes: ${pendientesTexto}`);
+              }
             }
 
           } catch (error) {
@@ -232,10 +413,19 @@ async function consultarNotificacionesPendientes() {
               [notificacion.iclock_transaction_id]
             );
           }
+          
+          // Retornar cantidad de operaciones bloqueadas para el resumen
+          return operacionesBloqueadas;
         });
 
         // Esperar a que todas las notificaciones del lote se procesen antes de continuar
-        await Promise.all(promesasProcesamiento);
+        const resultados = await Promise.all(promesasProcesamiento);
+        
+        // Contar total de operaciones bloqueadas en este lote
+        const totalBloqueadas = resultados.reduce((suma, bloqueadas) => suma + (bloqueadas || 0), 0);
+        if (totalBloqueadas > 0) {
+          console.log(`Operaciones bloqueadas detectadas en este lote: ${totalBloqueadas}`);
+        }
       }
     }
   } catch (error) {
