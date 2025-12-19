@@ -28,7 +28,7 @@ const axiosInstance = axios.create({
 });
 
 const axiosInstanceProexsi = axios.create({
-    timeout: 5000, // 60 segundos de timeout específico para Proexsi
+    timeout: 60000, // 60 segundos de timeout específico para Proexsi
     timeoutErrorMessage: 'La solicitud a Proexsi excedio el tiempo máximo de espera'
 });
 
