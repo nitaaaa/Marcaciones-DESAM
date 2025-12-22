@@ -206,20 +206,18 @@ async function enviarMarcacionAPIProexsi(transaccion) {
 
         // Construir SOAP XML
         const soapXml = `<?xml version="1.0" encoding="utf-8"?>
-                            <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-                                xmlns:xsd="http://www.w3.org/2001/XMLSchema"
-                                xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
-                                <soap:Body>
-                                    <CargaMarcacion xmlns="http://tempuri.org/">
-                                    <CodigoUsuario>${process.env.PROEXSI_CODIGO_USUARIO}</CodigoUsuario>
-                                    <Password>${process.env.PROEXSI_PASSWORD}</Password>
-                                    <Periodo>${periodo}</Periodo>
-                                    <Marcaciones>
-                                        ${marcacionFormateada}
-                                    </Marcaciones>
-                                    </CargaMarcacion>
-                                </soap:Body>
-                            </soap:Envelope>`;
+        <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                    xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+                    xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+        <soap:Body>
+            <CargaMarcacion xmlns="http://tempuri.org/">
+            <CodigoUsuario>${process.env.PROEXSI_CODIGO_USUARIO}</CodigoUsuario>
+            <Password>${process.env.PROEXSI_PASSWORD}</Password>
+            <Periodo>${periodo}</Periodo>
+            <Marcaciones>${marcacionFormateada}</Marcaciones>
+            </CargaMarcacion>
+        </soap:Body>
+        </soap:Envelope>`;
         const response = await axiosInstanceProexsi.post(
             process.env.API_URL_PROEXSI,
             soapXml,
